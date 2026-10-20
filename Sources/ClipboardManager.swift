@@ -4,12 +4,9 @@ import ImageIO
 import Carbon.HIToolbox
 
 // MARK: - MacBook Hardware Notch Morphing Shape (Concave Top Ears + Rounded Bottom)
-/// Draws a single continuous shape anchored at the very top bezel (`y = 0`):
-/// - Top-left and top-right corners flare *outward* with concave quadratic curves (`topCornerRadius`)
-///   so the vertical walls blend tangentially into the physical MacBook top bezel.
-/// - Bottom-left and bottom-right corners curve *inward* with smooth rounded corners (`bottomCornerRadius`).
-/// - Conforms to `Animatable` across all 4 parameters (`width`, `height`, `topCornerRadius`, `bottomCornerRadius`)
-///   so SwiftUI interpolates the entire silhouette at 120Hz with zero layout jitter.
+/// Draws a single continuous shape anchored at the very top bezel (`y = 0`).
+/// Conforms to `Animatable` across all 4 parameters (`width`, `height`, `topCornerRadius`, `bottomCornerRadius`)
+/// so CoreAnimation interpolates the silhouette at 120Hz ProMotion with zero layout jitter.
 struct MacBookNotchShape: Shape {
     var width: CGFloat
     var height: CGFloat
@@ -36,49 +33,43 @@ struct MacBookNotchShape: Shape {
 
         let w = max(32, min(width, rect.width))
         let h = max(12, min(height, rect.height))
-        let minX = rect.midX - (w / 2.0)
-        let maxX = rect.midX + (w / 2.0)
-        let minY: CGFloat = 0 // Always 100% flush with the physical top screen edge!
+        let minX = rect.midX - (w * 0.5)
+        let maxX = rect.midX + (w * 0.5)
+        let minY: CGFloat = 0
         let maxY = h
 
-        let topR = max(0, min(topCornerRadius, w / 4.0, h / 2.0))
+        let topR = max(0, min(topCornerRadius, w * 0.25, h * 0.5))
         let innerWidth = max(0, w - (2.0 * topR))
-        let bottomR = max(0, min(bottomCornerRadius, innerWidth / 2.0, h - topR))
+        let bottomR = max(0, min(bottomCornerRadius, innerWidth * 0.5, h - topR))
 
-        // 1. Start at top-left tip flush with the physical top screen edge (y = 0)
         path.move(to: CGPoint(x: minX, y: minY))
-
-        // 2. Top horizontal edge across the camera notch
         path.addLine(to: CGPoint(x: maxX, y: minY))
 
-        // 3. Top-right concave "notch ear" curving smoothly down into the right vertical wall
+        // Top-right concave notch ear
         path.addQuadCurve(
             to: CGPoint(x: maxX - topR, y: minY + topR),
             control: CGPoint(x: maxX - topR, y: minY)
         )
 
-        // 4. Right vertical wall down to bottom-right corner
         path.addLine(to: CGPoint(x: maxX - topR, y: maxY - bottomR))
 
-        // 5. Bottom-right convex rounded corner
+        // Bottom-right convex corner
         path.addQuadCurve(
             to: CGPoint(x: maxX - topR - bottomR, y: maxY),
             control: CGPoint(x: maxX - topR, y: maxY)
         )
 
-        // 6. Bottom horizontal edge
         path.addLine(to: CGPoint(x: minX + topR + bottomR, y: maxY))
 
-        // 7. Bottom-left convex rounded corner
+        // Bottom-left convex corner
         path.addQuadCurve(
             to: CGPoint(x: minX + topR, y: maxY - bottomR),
             control: CGPoint(x: minX + topR, y: maxY)
         )
 
-        // 8. Left vertical wall up to top-left concave "notch ear"
         path.addLine(to: CGPoint(x: minX + topR, y: minY + topR))
 
-        // 9. Top-left concave "notch ear" flaring smoothly out to the top screen edge (y = 0)
+        // Top-left concave notch ear
         path.addQuadCurve(
             to: CGPoint(x: minX, y: minY),
             control: CGPoint(x: minX + topR, y: minY)
@@ -89,7 +80,7 @@ struct MacBookNotchShape: Shape {
     }
 }
 
-// MARK: - Clipboard Item Model
+// MARK: - Clipboard Item Model (Pre-Computed Preview & Metadata for 0ms Render Cost)
 struct ClipboardEntry: Identifiable, Equatable {
     enum ContentKind: Equatable {
         case text(String)
@@ -102,36 +93,47 @@ struct ClipboardEntry: Identifiable, Equatable {
     var isPinned: Bool
     var previewImage: NSImage?
 
-    var isImage: Bool {
-        if case .image = kind { return true }
-        return false
-    }
+    // Pre-computed strings so CoreText never processes huge strings during 120Hz animations
+    let isImage: Bool
+    let textPreview: String
+    let metadataLabel: String
 
-    var textPreview: String {
+    init(
+        id: UUID,
+        timestamp: Date,
+        kind: ContentKind,
+        isPinned: Bool,
+        previewImage: NSImage?
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.kind = kind
+        self.isPinned = isPinned
+        self.previewImage = previewImage
+
         switch kind {
         case .text(let str):
-            return str.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .image(_, let size):
-            return "PNG Image • \(Int(size.width)) × \(Int(size.height))"
-        }
-    }
+            self.isImage = false
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            let charCount = trimmed.count
+            // Collapse newlines into single spaces and cap preview at 180 chars for ultra-fast GPU text layout
+            let compactLine = trimmed
+                .replacingOccurrences(of: "\r\n", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+            if compactLine.count > 180 {
+                self.textPreview = String(compactLine.prefix(180)) + "…"
+            } else {
+                self.textPreview = compactLine
+            }
+            self.metadataLabel = "\(charCount) chars"
 
-    var metadataLabel: String {
-        switch kind {
-        case .text(let str):
-            let count = str.trimmingCharacters(in: .whitespacesAndNewlines).count
-            return "\(count) chars"
         case .image(_, let size):
-            return "\(Int(size.width))×\(Int(size.height)) px"
+            self.isImage = true
+            let w = Int(size.width)
+            let h = Int(size.height)
+            self.textPreview = "PNG Image • \(w) × \(h)"
+            self.metadataLabel = "\(w)×\(h) px"
         }
-    }
-
-    var relativeTimeString: String {
-        let elapsed = max(0, Int(Date().timeIntervalSince(timestamp)))
-        if elapsed < 45 { return "Just now" }
-        if elapsed < 3600 { return "\(elapsed / 60)m ago" }
-        if elapsed < 86400 { return "\(elapsed / 3600)h ago" }
-        return "\(elapsed / 86400)d ago"
     }
 
     static func == (lhs: ClipboardEntry, rhs: ClipboardEntry) -> Bool {
@@ -169,10 +171,22 @@ final class ClipboardManager: ObservableObject {
     @Published var hotkeyMode: ClipboardHotkeyMode = .fnCommand {
         didSet {
             UserDefaults.standard.set(hotkeyMode.rawValue, forKey: hotkeyStorageKey)
+            setupGlobalHotkeyMonitors()
         }
     }
 
-    @Published var items: [ClipboardEntry] = []
+    @Published var items: [ClipboardEntry] = [] {
+        didSet {
+            rebuildCachedCategoryLists()
+        }
+    }
+
+    // Pre-cached category arrays so 120Hz SwiftUI animations never run `.filter` per frame
+    @Published private(set) var copiedTextItems: [ClipboardEntry] = []
+    @Published private(set) var pinnedItems: [ClipboardEntry] = []
+    @Published private(set) var imageItems: [ClipboardEntry] = []
+    @Published private(set) var unpinnedTotalCount: Int = 0
+
     @Published var selectedTab: FilterTab = .copied
     @Published var showClearAllConfirmation: Bool = false
 
@@ -181,9 +195,9 @@ final class ClipboardManager: ObservableObject {
     @Published var latestToastEntry: ClipboardEntry? = nil
     @Published var notchSize: CGSize = CGSize(width: 188, height: 32)
 
-    // Fixed borderless canvas dimensions (top-anchored at screen.frame.maxY)
-    static let panelCanvasWidth: CGFloat = 540
-    static let panelCanvasHeight: CGFloat = 480
+    // Compact borderless canvas dimensions (top-anchored at screen.frame.maxY)
+    static let panelCanvasWidth: CGFloat = 516
+    static let panelCanvasHeight: CGFloat = 460
 
     enum IslandMode: Equatable {
         case hidden
@@ -227,7 +241,7 @@ final class ClipboardManager: ObservableObject {
 
     private let enabledStorageKey = "MyMouse.Clipboard.Enabled.v3"
     private let hotkeyStorageKey = "MyMouse.Clipboard.Hotkey.v3"
-    private let maxUnpinnedItems = 35
+    private let maxUnpinnedItems = 30
 
     private var pinnedStorageDirectory: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -250,7 +264,7 @@ final class ClipboardManager: ObservableObject {
             hotkeyMode = mode
         }
 
-        // Restore all Pinned items from disk immediately on launch / reboot!
+        // Restore all Pinned items from disk immediately on launch / reboot
         loadPinnedItemsFromDisk()
 
         if let front = NSWorkspace.shared.frontmostApplication,
@@ -272,6 +286,7 @@ final class ClipboardManager: ObservableObject {
         }
 
         setupGlobalHotkeyMonitors()
+
         screenChangeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -294,54 +309,81 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    // MARK: - Persistent Storage for Pinned Items (Survives Shutdown / Quit / Restart)
-    func savePinnedItemsToDisk() {
-        let pinnedEntries = items.filter { $0.isPinned }
-        let dir = pinnedStorageDirectory
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    private func rebuildCachedCategoryLists() {
+        var copied: [ClipboardEntry] = []
+        var pinned: [ClipboardEntry] = []
+        var imgs: [ClipboardEntry] = []
+        var unpinned = 0
 
-        var records: [PersistedPinnedRecord] = []
-        var activeImageFiles: Set<String> = []
-
-        for entry in pinnedEntries {
-            switch entry.kind {
-            case .text(let str):
-                records.append(PersistedPinnedRecord(
-                    id: entry.id,
-                    timestamp: entry.timestamp,
-                    isImage: false,
-                    textContent: str,
-                    imageFileName: nil,
-                    imageWidth: nil,
-                    imageHeight: nil
-                ))
-            case .image(let pngData, let size):
-                let fileName = "\(entry.id.uuidString).png"
-                let fileURL = dir.appendingPathComponent(fileName)
-                if !FileManager.default.fileExists(atPath: fileURL.path) {
-                    try? pngData.write(to: fileURL, options: .atomic)
+        for item in items {
+            if item.isPinned {
+                pinned.append(item)
+            } else {
+                unpinned += 1
+                if item.isImage {
+                    imgs.append(item)
+                } else {
+                    copied.append(item)
                 }
-                activeImageFiles.insert(fileName)
-                records.append(PersistedPinnedRecord(
-                    id: entry.id,
-                    timestamp: entry.timestamp,
-                    isImage: true,
-                    textContent: nil,
-                    imageFileName: fileName,
-                    imageWidth: Double(size.width),
-                    imageHeight: Double(size.height)
-                ))
             }
         }
 
-        if let jsonData = try? JSONEncoder().encode(records) {
-            try? jsonData.write(to: pinnedManifestURL, options: .atomic)
-        }
+        copiedTextItems = copied
+        pinnedItems = pinned
+        imageItems = imgs
+        unpinnedTotalCount = unpinned
+    }
 
-        // Clean up any unpinned/deleted image files on disk
-        if let existingFiles = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
-            for file in existingFiles where file.hasSuffix(".png") && !activeImageFiles.contains(file) {
-                try? FileManager.default.removeItem(at: dir.appendingPathComponent(file))
+    // MARK: - Persistent Storage for Pinned Items (Survives Shutdown / Quit / Restart)
+    func savePinnedItemsToDisk() {
+        let pinnedEntries = pinnedItems
+        let dir = pinnedStorageDirectory
+
+        DispatchQueue.global(qos: .utility).async { [pinnedManifestURL] in
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+            var records: [PersistedPinnedRecord] = []
+            var activeImageFiles: Set<String> = []
+
+            for entry in pinnedEntries {
+                switch entry.kind {
+                case .text(let str):
+                    records.append(PersistedPinnedRecord(
+                        id: entry.id,
+                        timestamp: entry.timestamp,
+                        isImage: false,
+                        textContent: str,
+                        imageFileName: nil,
+                        imageWidth: nil,
+                        imageHeight: nil
+                    ))
+                case .image(let pngData, let size):
+                    let fileName = "\(entry.id.uuidString).png"
+                    let fileURL = dir.appendingPathComponent(fileName)
+                    if !FileManager.default.fileExists(atPath: fileURL.path) {
+                        try? pngData.write(to: fileURL, options: .atomic)
+                    }
+                    activeImageFiles.insert(fileName)
+                    records.append(PersistedPinnedRecord(
+                        id: entry.id,
+                        timestamp: entry.timestamp,
+                        isImage: true,
+                        textContent: nil,
+                        imageFileName: fileName,
+                        imageWidth: Double(size.width),
+                        imageHeight: Double(size.height)
+                    ))
+                }
+            }
+
+            if let jsonData = try? JSONEncoder().encode(records) {
+                try? jsonData.write(to: pinnedManifestURL, options: .atomic)
+            }
+
+            if let existingFiles = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
+                for file in existingFiles where file.hasSuffix(".png") && !activeImageFiles.contains(file) {
+                    try? FileManager.default.removeItem(at: dir.appendingPathComponent(file))
+                }
             }
         }
     }
@@ -360,7 +402,7 @@ final class ClipboardManager: ObservableObject {
                 let fileURL = dir.appendingPathComponent(fileName)
                 if let pngData = try? Data(contentsOf: fileURL) {
                     let size = CGSize(width: rec.imageWidth ?? 800, height: rec.imageHeight ?? 600)
-                    let thumb = Self.createRetinaThumbnail(from: pngData, maxPixelDimension: 640)
+                    let thumb = Self.createRetinaThumbnail(from: pngData, maxPixelDimension: 520)
                     restored.append(ClipboardEntry(
                         id: rec.id,
                         timestamp: rec.timestamp,
@@ -385,12 +427,24 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    // MARK: - Global Hotkey Monitor (Also called from MouseEngine CGEventTap for 100% reliability)
+    // MARK: - Ultra-Low-Power Global Hotkey Monitor (Zero Keystroke Wakeups When Using fn+⌘)
     private func setupGlobalHotkeyMonitors() {
-        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] event in
+        if let mon = globalFlagsMonitor {
+            NSEvent.removeMonitor(mon)
+            globalFlagsMonitor = nil
+        }
+        if let mon = localFlagsMonitor {
+            NSEvent.removeMonitor(mon)
+            localFlagsMonitor = nil
+        }
+
+        // Only listen to .flagsChanged when hotkeyMode is .fnCommand so regular typing uses 0% CPU!
+        let mask: NSEvent.EventTypeMask = (hotkeyMode == .fnCommand) ? [.flagsChanged] : [.keyDown]
+
+        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             self?.handleHotkeyEvent(event)
         }
-        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] event in
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             self?.handleHotkeyEvent(event)
             return event
         }
@@ -427,7 +481,7 @@ final class ClipboardManager: ObservableObject {
 
     func triggerPopupWithCooldown() {
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastHotkeyTriggerTime > 0.35 else { return }
+        guard now - lastHotkeyTriggerTime > 0.32 else { return }
         lastHotkeyTriggerTime = now
         DispatchQueue.main.async {
             self.togglePopup()
@@ -441,10 +495,11 @@ final class ClipboardManager: ObservableObject {
 
         lastChangeCount = NSPasteboard.general.changeCount
 
-        let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
+        // Coalesced low-power timer (0.85s interval + 0.35s tolerance allows macOS CPU sleep coalescing)
+        let timer = Timer(timeInterval: 0.85, repeats: true) { [weak self] _ in
             self?.checkPasteboard()
         }
-        timer.tolerance = 0.25
+        timer.tolerance = 0.35
         RunLoop.main.add(timer, forMode: .common)
         self.pollTimer = timer
 
@@ -465,8 +520,9 @@ final class ClipboardManager: ObservableObject {
 
     private func checkPasteboard() {
         let pb = NSPasteboard.general
-        guard pb.changeCount != lastChangeCount else { return }
-        lastChangeCount = pb.changeCount
+        let currentCount = pb.changeCount
+        guard currentCount != lastChangeCount else { return }
+        lastChangeCount = currentCount
 
         if isInternalPaste {
             isInternalPaste = false
@@ -543,7 +599,7 @@ final class ClipboardManager: ObservableObject {
     }
 
     // MARK: - High-DPI Retina Thumbnail Generator (True Aspect Ratio, Ultra-Low RAM)
-    private static func createRetinaThumbnail(from pngData: Data, maxPixelDimension: Int = 600) -> NSImage? {
+    private static func createRetinaThumbnail(from pngData: Data, maxPixelDimension: Int = 520) -> NSImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -593,42 +649,46 @@ final class ClipboardManager: ObservableObject {
     }
 
     func addImageEntry(_ image: NSImage) {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let pngData = rep.representation(using: .png, properties: [:]) else {
-            return
+        // Encode PNG & thumbnail on background utility queue to keep main thread at 0ms latency!
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let pngData = rep.representation(using: .png, properties: [:]) else {
+                return
+            }
+
+            let pixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+            guard pixelSize.width > 1 && pixelSize.height > 1 else { return }
+
+            let crispThumb = Self.createRetinaThumbnail(from: pngData, maxPixelDimension: 520)
+
+            let entry = ClipboardEntry(
+                id: UUID(),
+                timestamp: Date(),
+                kind: .image(pngData, pixelSize),
+                isPinned: false,
+                previewImage: crispThumb
+            )
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.items.insert(entry, at: 0)
+                self.trimHistoryIfNeeded()
+                self.showCompactDynamicIslandToast(for: entry)
+            }
         }
-
-        let pixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
-        guard pixelSize.width > 1 && pixelSize.height > 1 else { return }
-
-        let crispThumb = Self.createRetinaThumbnail(from: pngData, maxPixelDimension: 640)
-
-        let entry = ClipboardEntry(
-            id: UUID(),
-            timestamp: Date(),
-            kind: .image(pngData, pixelSize),
-            isPinned: false,
-            previewImage: crispThumb
-        )
-        items.insert(entry, at: 0)
-        trimHistoryIfNeeded()
-        showCompactDynamicIslandToast(for: entry)
     }
 
     private func trimHistoryIfNeeded() {
-        let unpinnedCount = items.filter { !$0.isPinned }.count
-        if unpinnedCount > maxUnpinnedItems {
+        if unpinnedTotalCount > maxUnpinnedItems {
             if let lastUnpinnedIdx = items.lastIndex(where: { !$0.isPinned }) {
                 items.remove(at: lastUnpinnedIdx)
             }
         }
     }
 
-    /// Moves item between Copied/Images and the dedicated Pinned tab, and persists Pinned items to disk!
     func togglePin(_ entry: ClipboardEntry) {
         guard let idx = items.firstIndex(where: { $0.id == entry.id }) else { return }
-        withAnimation(AppTheme.springSlider) {
+        withAnimation(AppTheme.springSnappy) {
             items[idx].isPinned.toggle()
         }
         savePinnedItemsToDisk()
@@ -644,9 +704,8 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    /// Clears ONLY unpinned items — Pinned items remain 100% intact on disk and in the Pinned tab!
     func clearAllUnpinned() {
-        withAnimation(AppTheme.springSlider) {
+        withAnimation(AppTheme.springSnappy) {
             items.removeAll { !$0.isPinned }
             showClearAllConfirmation = false
         }
@@ -670,7 +729,6 @@ final class ClipboardManager: ObservableObject {
         }
         lastChangeCount = pb.changeCount
 
-        // Determine the external app where the user's cursor / placeholder is waiting
         let currentFront = NSWorkspace.shared.frontmostApplication
         let targetApp: NSRunningApplication?
         if let front = currentFront, front.bundleIdentifier != Bundle.main.bundleIdentifier {
@@ -686,8 +744,7 @@ final class ClipboardManager: ObservableObject {
         popupPanel?.ignoresMouseEvents = true
         popupPanel?.resignKey()
 
-        // Snappy notch collapse so the panel is 100% ordered out before ⌘V is sent
-        withAnimation(.spring(response: 0.20, dampingFraction: 0.88, blendDuration: 0.08)) {
+        withAnimation(.spring(response: 0.20, dampingFraction: 0.90, blendDuration: 0.06)) {
             islandMode = .hidden
         }
 
@@ -706,12 +763,12 @@ final class ClipboardManager: ObservableObject {
                 app.activate(options: [.activateIgnoringOtherApps])
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
                 KeyCodeHelper.sendKeyCombo(keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand)
             }
         }
         hideOrderOutWorkItem = orderOutAndPasteWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: orderOutAndPasteWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: orderOutAndPasteWork)
     }
 
     // MARK: - Hardware MacBook Notch Geometry Detection & Window Management
@@ -736,9 +793,9 @@ final class ClipboardManager: ObservableObject {
         case .hidden:
             return CGSize(width: notchSize.width + 12, height: notchSize.height)
         case .compactToast:
-            return CGSize(width: 430, height: notchSize.height + 52)
+            return CGSize(width: 424, height: notchSize.height + 50)
         case .expandedDrawer:
-            return CGSize(width: 510, height: 454)
+            return CGSize(width: 504, height: 448)
         }
     }
 
@@ -775,6 +832,8 @@ final class ClipboardManager: ObservableObject {
             rootView: DynamicIslandClipboardView(manager: self),
             manager: self
         )
+        host.wantsLayer = true
+        host.layerContentsRedrawPolicy = .onSetNeedsDisplay
         panel.contentView = host
         self.hostingView = host
         self.popupPanel = panel
@@ -793,11 +852,13 @@ final class ClipboardManager: ObservableObject {
 
         let pw = Self.panelCanvasWidth
         let ph = Self.panelCanvasHeight
-        let px = fullFrame.midX - (pw / 2.0)
-        // Flush with the very top physical pixel row of the MacBook screen (`fullFrame.maxY`)
-        let py = fullFrame.maxY - ph
+        let px = round(fullFrame.midX - (pw * 0.5))
+        let py = round(fullFrame.maxY - ph)
 
-        panel.setFrame(NSRect(x: px, y: py, width: pw, height: ph), display: true)
+        let targetFrame = NSRect(x: px, y: py, width: pw, height: ph)
+        if panel.frame != targetFrame {
+            panel.setFrame(targetFrame, display: false)
+        }
     }
 
     /// Briefly morphs the MacBook camera notch into a sleek deep-black compact Island when user copies something new
@@ -820,18 +881,12 @@ final class ClipboardManager: ObservableObject {
         popupPanel?.ignoresMouseEvents = false
         latestToastEntry = entry
 
-        let wasHidden = (popupPanel?.isVisible != true) || (islandMode == .hidden)
-        if wasHidden {
-            islandMode = .hidden
+        if popupPanel?.isVisible != true {
             popupPanel?.orderFrontRegardless()
-            hostingView?.layoutSubtreeIfNeeded()
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            withAnimation(AppTheme.springNotchExpand) {
-                self.islandMode = .compactToast
-            }
+        withAnimation(AppTheme.springNotchExpand) {
+            self.islandMode = .compactToast
         }
 
         let work = DispatchWorkItem { [weak self] in
@@ -845,10 +900,10 @@ final class ClipboardManager: ObservableObject {
                 }
             }
             self.hideOrderOutWorkItem = orderOutWork
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36, execute: orderOutWork)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: orderOutWork)
         }
         toastDismissWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.1, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     func togglePopup() {
@@ -875,20 +930,12 @@ final class ClipboardManager: ObservableObject {
         positionPanelAtTopCenter()
         popupPanel?.ignoresMouseEvents = false
 
-        let wasVisible = (popupPanel?.isVisible == true) && (islandMode != .hidden)
-        if !wasVisible {
-            islandMode = .hidden
-            popupPanel?.orderFrontRegardless()
-            hostingView?.layoutSubtreeIfNeeded()
-        } else {
+        if popupPanel?.isVisible != true {
             popupPanel?.orderFrontRegardless()
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            withAnimation(AppTheme.springNotchExpand) {
-                self.islandMode = .expandedDrawer
-            }
+        withAnimation(AppTheme.springNotchExpand) {
+            self.islandMode = .expandedDrawer
         }
 
         installOutsideClickMonitor()
@@ -912,7 +959,7 @@ final class ClipboardManager: ObservableObject {
             }
         }
         hideOrderOutWorkItem = orderOutWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: orderOutWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: orderOutWork)
     }
 
     func activeNotchScreenRect() -> NSRect {
@@ -920,7 +967,7 @@ final class ClipboardManager: ObservableObject {
         let size = activeMorphSize(for: islandMode)
         let pf = panel.frame
         return NSRect(
-            x: pf.midX - (size.width / 2.0),
+            x: pf.midX - (size.width * 0.5),
             y: pf.maxY - size.height,
             width: size.width,
             height: size.height
@@ -950,12 +997,9 @@ final class ClipboardManager: ObservableObject {
 
 // MARK: - Top-Bezel Unconstrained Non-Activating Panel & Passthrough Hosting View
 private final class DynamicIslandPanel: NSPanel {
-    // CRITICAL: Must return false so opening or clicking inside the Notch Clipboard
-    // NEVER steals key focus away from the user's active text field / cursor placeholder!
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    // CRITICAL: Prevent AppKit from clamping the window below the macOS menu bar / physical notch!
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         return frameRect
     }
@@ -981,7 +1025,6 @@ private final class NotchPassthroughHostingView<Content: View>: NSHostingView<Co
         super.init(coder: coder)
     }
 
-    // CRITICAL: Accept first-mouse clicks immediately without requiring the panel to become key!
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         return true
     }
@@ -992,7 +1035,7 @@ private final class NotchPassthroughHostingView<Content: View>: NSHostingView<Co
         }
         let activeSize = manager.activeMorphSize(for: manager.islandMode)
         let activeRect = NSRect(
-            x: bounds.midX - (activeSize.width / 2.0),
+            x: bounds.midX - (activeSize.width * 0.5),
             y: bounds.maxY - activeSize.height,
             width: activeSize.width,
             height: activeSize.height
@@ -1004,34 +1047,17 @@ private final class NotchPassthroughHostingView<Content: View>: NSHostingView<Co
     }
 }
 
-// MARK: - True MacBook Notch Morphing Clipboard View (Pure Pitch-Black, Liquid Glass Slider, SF Pro UI)
+// MARK: - 120Hz ProMotion MacBook Notch Morphing Clipboard View (Zero Offscreen Blur/Shadow Overhead)
 struct DynamicIslandClipboardView: View {
     @ObservedObject var manager: ClipboardManager
     @Namespace private var tabSliderNamespace
 
-    // Strictly separated lists! Pinned items ONLY appear in Pinned tab!
-    private var unpinnedCopiedTextItems: [ClipboardEntry] {
-        manager.items.filter { !$0.isPinned && !$0.isImage }
-    }
-
-    private var pinnedOnlyItems: [ClipboardEntry] {
-        manager.items.filter { $0.isPinned }
-    }
-
-    private var imageOnlyItems: [ClipboardEntry] {
-        manager.items.filter { !$0.isPinned && $0.isImage }
-    }
-
     private var activeTabItems: [ClipboardEntry] {
         switch manager.selectedTab {
-        case .copied: return unpinnedCopiedTextItems
-        case .pinned: return pinnedOnlyItems
-        case .images: return imageOnlyItems
+        case .copied: return manager.copiedTextItems
+        case .pinned: return manager.pinnedItems
+        case .images: return manager.imageItems
         }
-    }
-
-    private var unpinnedTotalCount: Int {
-        manager.items.filter { !$0.isPinned }.count
     }
 
     private var currentMorphSize: CGSize {
@@ -1067,33 +1093,23 @@ struct DynamicIslandClipboardView: View {
         )
 
         ZStack(alignment: .top) {
-            // 1. Pure pitch-black (#000000) hardware notch fill — ZERO border or outline on the edges!
+            // 1. Pure pitch-black (#000000) hardware notch fill — Zero border & zero expensive blur shadow!
             morphShape
                 .fill(Color.black)
-                .shadow(
-                    color: manager.islandMode == .hidden ? Color.clear : Color.black.opacity(0.62),
-                    radius: manager.islandMode == .expandedDrawer ? 24 : 14,
-                    x: 0,
-                    y: manager.islandMode == .expandedDrawer ? 12 : 6
-                )
 
-            // 2. Content inside the morphing pitch-black notch (masked by the exact same Animatable shape!)
+            // 2. Pre-warmed content layers (no Frame-1 view-tree creation stutter!)
             ZStack(alignment: .top) {
-                if manager.islandMode == .compactToast {
-                    compactToastContent(notchHeight: notchHeight)
-                        .padding(.horizontal, 14)
-                        .frame(width: 430, height: notchHeight + 52, alignment: .top)
-                        .transition(
-                            .opacity.combined(with: .scale(scale: 0.88, anchor: .top))
-                        )
-                } else if manager.islandMode == .expandedDrawer {
-                    expandedNotchDrawerContent(notchHeight: notchHeight)
-                        .padding(.horizontal, 18)
-                        .frame(width: 510, height: 454, alignment: .top)
-                        .transition(
-                            .opacity.combined(with: .scale(scale: 0.88, anchor: .top))
-                        )
-                }
+                compactToastContent(notchHeight: notchHeight)
+                    .padding(.horizontal, 14)
+                    .frame(width: 424, height: notchHeight + 50, alignment: .top)
+                    .opacity(manager.islandMode == .compactToast ? 1.0 : 0.0)
+                    .allowsHitTesting(manager.islandMode == .compactToast)
+
+                expandedNotchDrawerContent(notchHeight: notchHeight)
+                    .padding(.horizontal, 18)
+                    .frame(width: 504, height: 448, alignment: .top)
+                    .opacity(manager.islandMode == .expandedDrawer ? 1.0 : 0.0)
+                    .allowsHitTesting(manager.islandMode == .expandedDrawer)
             }
             .frame(
                 width: ClipboardManager.panelCanvasWidth,
@@ -1116,7 +1132,6 @@ struct DynamicIslandClipboardView: View {
             manager.showPopup()
         }) {
             VStack(spacing: 0) {
-                // Top Notch Wing Row (Flanking the physical MacBook camera in the center)
                 HStack(spacing: 0) {
                     HStack(spacing: 6) {
                         Circle()
@@ -1130,13 +1145,12 @@ struct DynamicIslandClipboardView: View {
 
                     Spacer(minLength: 0)
 
-                    // Center physical camera cutout keep-out zone
                     Color.clear
                         .frame(width: manager.notchSize.width, height: notchHeight)
 
                     Spacer(minLength: 0)
 
-                    Text("fn + ⌘")
+                    Text("fn+⌘")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(AppTheme.textSecondary)
                         .padding(.horizontal, 7)
@@ -1146,25 +1160,24 @@ struct DynamicIslandClipboardView: View {
                 }
                 .frame(height: notchHeight)
 
-                // Lower Morph Area directly below the physical camera cutout
                 HStack(spacing: 11) {
                     ZStack {
                         Circle()
                             .fill(AppTheme.accent.opacity(0.18))
-                            .frame(width: 28, height: 28)
+                            .frame(width: 26, height: 26)
                         Image(systemName: manager.latestToastEntry?.isImage == true ? "photo" : "checkmark")
-                            .font(.system(size: 11.5, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(AppTheme.accent)
                     }
 
-                    VStack(alignment: .leading, spacing: 1.5) {
-                        Text(manager.latestToastEntry?.isImage == true ? "Image Saved to Notch" : "Copied to Notch")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(manager.latestToastEntry?.isImage == true ? "Image Saved" : "Copied")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundColor(AppTheme.textPrimary)
 
                         if let entry = manager.latestToastEntry {
                             Text(entry.textPreview)
-                                .font(.system(size: 11, weight: .regular))
+                                .font(.system(size: 10.5, weight: .regular))
                                 .foregroundColor(AppTheme.textSecondary)
                                 .lineLimit(1)
                         }
@@ -1176,7 +1189,7 @@ struct DynamicIslandClipboardView: View {
                         Image(nsImage: thumb)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                            .frame(width: 36, height: 30)
+                            .frame(width: 34, height: 28)
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     } else {
                         Text("Open")
@@ -1188,7 +1201,7 @@ struct DynamicIslandClipboardView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .frame(height: 50)
+                .frame(height: 48)
             }
             .contentShape(Rectangle())
         }
@@ -1198,10 +1211,9 @@ struct DynamicIslandClipboardView: View {
     // MARK: - 2. Expanded Deep-Black Notch Clipboard Drawer (fn + Command)
     private func expandedNotchDrawerContent(notchHeight: CGFloat) -> some View {
         ZStack {
-            VStack(spacing: 11) {
-                // Top Notch Ear Wings (Flanking the physical MacBook camera at y = 0 ..< notchHeight)
+            VStack(spacing: 10) {
+                // Top Notch Ear Wings (Flanking the physical MacBook camera)
                 HStack(spacing: 0) {
-                    // Left Wing: Sleek Close Pill
                     HStack(spacing: 8) {
                         Button(action: { manager.closePopup() }) {
                             HStack(spacing: 5) {
@@ -1223,7 +1235,7 @@ struct DynamicIslandClipboardView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.leading, 14)
 
-                    // Center Physical MacBook Camera Cutout Zone (Pure Pitch Black)
+                    // Center Physical MacBook Camera Cutout Zone
                     Color.clear
                         .frame(width: manager.notchSize.width, height: notchHeight)
 
@@ -1231,7 +1243,7 @@ struct DynamicIslandClipboardView: View {
                     HStack(spacing: 8) {
                         Spacer(minLength: 0)
 
-                        if unpinnedTotalCount > 0 {
+                        if manager.unpinnedTotalCount > 0 {
                             Button(action: {
                                 withAnimation(AppTheme.springSnappy) {
                                     manager.showClearAllConfirmation = true
@@ -1250,7 +1262,7 @@ struct DynamicIslandClipboardView: View {
                             }
                             .buttonStyle(.plain)
                         } else {
-                            Text("fn + ⌘")
+                            Text("fn+⌘")
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundColor(AppTheme.textMuted)
                                 .padding(.horizontal, 8)
@@ -1264,11 +1276,11 @@ struct DynamicIslandClipboardView: View {
                 .frame(height: max(notchHeight, 32))
                 .padding(.top, 2)
 
-                // MARK: Single Gliding Liquid Glass Sliding Tab Bar (Copied | Pinned | Images)
+                // Single Gliding Liquid Glass Sliding Tab Bar (Copied | Pinned | Images)
                 HStack(spacing: 0) {
-                    slidingTabButton(.copied, count: unpinnedCopiedTextItems.count)
-                    slidingTabButton(.pinned, count: pinnedOnlyItems.count)
-                    slidingTabButton(.images, count: imageOnlyItems.count)
+                    slidingTabButton(.copied, count: manager.copiedTextItems.count)
+                    slidingTabButton(.pinned, count: manager.pinnedItems.count)
+                    slidingTabButton(.images, count: manager.imageItems.count)
                 }
                 .padding(3.5)
                 .background(
@@ -1281,16 +1293,16 @@ struct DynamicIslandClipboardView: View {
                 )
                 .padding(.horizontal, 16)
 
-                // Items Scroll Area inside the pitch-black notch
+                // Items Scroll Area (Persistent ScrollView without .id destruction for zero tab-switch lag)
                 if activeTabItems.isEmpty {
                     VStack(spacing: 8) {
                         Spacer()
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.04))
-                                .frame(width: 46, height: 46)
+                                .frame(width: 44, height: 44)
                             Image(systemName: emptyStateIcon)
-                                .font(.system(size: 18, weight: .medium))
+                                .font(.system(size: 17, weight: .medium))
                                 .foregroundColor(AppTheme.textMuted)
                         }
                         Text(emptyStateTitle)
@@ -1303,7 +1315,6 @@ struct DynamicIslandClipboardView: View {
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.opacity)
                 } else {
                     ScrollView(showsIndicators: false) {
                         LazyVStack(spacing: 7) {
@@ -1319,17 +1330,14 @@ struct DynamicIslandClipboardView: View {
                         .padding(.horizontal, 16)
                         .padding(.bottom, 16)
                     }
-                    .id(manager.selectedTab)
-                    .transition(.opacity)
                 }
             }
-            .blur(radius: manager.showClearAllConfirmation ? 5 : 0)
 
             // Clear All Confirmation Modal Overlay inside the Notch
             if manager.showClearAllConfirmation {
-                Color.black.opacity(0.72)
+                Color.black.opacity(0.84)
                     .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.15)) {
+                        withAnimation(.easeOut(duration: 0.14)) {
                             manager.showClearAllConfirmation = false
                         }
                     }
@@ -1348,14 +1356,14 @@ struct DynamicIslandClipboardView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(AppTheme.textPrimary)
 
-                    Text("Removes \(unpinnedTotalCount) unpinned item(s).\nAll \(pinnedOnlyItems.count) Pinned item(s) are safely preserved.")
+                    Text("Removes \(manager.unpinnedTotalCount) unpinned item(s).\nAll \(manager.pinnedItems.count) Pinned item(s) are safely preserved.")
                         .font(.system(size: 11.5))
                         .foregroundColor(AppTheme.textSecondary)
                         .multilineTextAlignment(.center)
 
                     HStack(spacing: 10) {
                         Button(action: {
-                            withAnimation(.easeOut(duration: 0.15)) {
+                            withAnimation(.easeOut(duration: 0.14)) {
                                 manager.showClearAllConfirmation = false
                             }
                         }) {
@@ -1392,8 +1400,6 @@ struct DynamicIslandClipboardView: View {
                                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
                         )
                 )
-                .shadow(color: Color.black.opacity(0.75), radius: 22, x: 0, y: 8)
-                .transition(.scale(scale: 0.94).combined(with: .opacity))
             }
         }
     }
@@ -1465,7 +1471,7 @@ struct DynamicIslandClipboardView: View {
     }
 }
 
-// MARK: - Refined Apple-Standard Item Card Inside MacBook Notch Island
+// MARK: - Lightweight 120Hz Item Card Inside MacBook Notch Island
 private struct DynamicIslandItemCard: View {
     let item: ClipboardEntry
     let onPaste: () -> Void
@@ -1476,24 +1482,21 @@ private struct DynamicIslandItemCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            // Main Clickable Area -> Paste Immediately
             Button(action: onPaste) {
                 if let thumb = item.previewImage {
                     HStack(spacing: 12) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(Color.black.opacity(0.65))
                             Image(nsImage: thumb)
                                 .resizable()
-                                .interpolation(.high)
-                                .antialiased(true)
                                 .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: 136, maxHeight: 74)
-                                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .frame(maxWidth: 132, maxHeight: 70)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
-                        .frame(width: 140, height: 78)
+                        .frame(width: 136, height: 74)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
                         )
 
@@ -1514,7 +1517,7 @@ private struct DynamicIslandItemCard: View {
                             Text(item.metadataLabel)
                                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                 .foregroundColor(AppTheme.textSecondary)
-                            Text("\(item.relativeTimeString) • Click to paste")
+                            Text("Click to insert")
                                 .font(.system(size: 10.5))
                                 .foregroundColor(AppTheme.textMuted)
                         }
@@ -1522,7 +1525,7 @@ private struct DynamicIslandItemCard: View {
                     }
                     .contentShape(Rectangle())
                 } else {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(item.textPreview)
                             .font(.system(size: 12, weight: .regular))
                             .foregroundColor(AppTheme.textPrimary)
@@ -1535,7 +1538,7 @@ private struct DynamicIslandItemCard: View {
                                 HStack(spacing: 3) {
                                     Image(systemName: "pin.fill")
                                         .font(.system(size: 8.5))
-                                    Text("Saved")
+                                    Text("Pinned")
                                         .font(.system(size: 9.5, weight: .semibold))
                                 }
                                 .foregroundColor(AppTheme.warning)
@@ -1543,10 +1546,7 @@ private struct DynamicIslandItemCard: View {
                             Text(item.metadataLabel)
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundColor(AppTheme.textMuted)
-                            Text("•")
-                                .font(.system(size: 10))
-                                .foregroundColor(AppTheme.textMuted)
-                            Text(item.relativeTimeString)
+                            Text("• Click to insert")
                                 .font(.system(size: 10))
                                 .foregroundColor(AppTheme.textMuted)
                         }
@@ -1556,7 +1556,6 @@ private struct DynamicIslandItemCard: View {
             }
             .buttonStyle(.plain)
 
-            // Right Action Controls: Paste Pill | Pin Toggle | Delete
             HStack(spacing: 6) {
                 Button(action: onPaste) {
                     Text("Paste")
@@ -1571,7 +1570,6 @@ private struct DynamicIslandItemCard: View {
                 }
                 .buttonStyle(.plain)
 
-                // Pin / Unpin Button (Persists across Mac shutdown!)
                 Button(action: onTogglePin) {
                     Image(systemName: item.isPinned ? "pin.slash.fill" : "pin.fill")
                         .font(.system(size: 10.5, weight: .semibold))
@@ -1583,9 +1581,7 @@ private struct DynamicIslandItemCard: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(item.isPinned ? "Unpin item" : "Pin item (Saved permanently)")
 
-                // Delete Single Item
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 10, weight: .medium))
@@ -1594,11 +1590,10 @@ private struct DynamicIslandItemCard: View {
                         .background(Circle().fill(Color.white.opacity(0.05)))
                 }
                 .buttonStyle(.plain)
-                .help("Delete item")
             }
         }
         .padding(.horizontal, 13)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9.5)
         .background(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .fill(Color.white.opacity(isHovered ? 0.095 : 0.05))
@@ -1607,7 +1602,6 @@ private struct DynamicIslandItemCard: View {
                         .stroke(Color.white.opacity(isHovered ? 0.16 : 0.06), lineWidth: 1)
                 )
         )
-        .animation(AppTheme.springSnappy, value: isHovered)
         .onHover { hovering in
             isHovered = hovering
         }

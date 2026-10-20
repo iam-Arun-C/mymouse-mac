@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "MyMouse Studio"
+        window.title = "My Mouse"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -94,16 +94,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupStatusBarItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "computermouse.fill", accessibilityDescription: "MyMouse")
+            button.image = NSImage(systemSymbolName: "computermouse.fill", accessibilityDescription: "My Mouse")
         }
 
         let menu = NSMenu()
 
-        let openItem = NSMenuItem(title: "Open MyMouse Studio...", action: #selector(openMainWindow), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open My Mouse...", action: #selector(openMainWindow), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
 
-        let clipItem = NSMenuItem(title: "Notch Clipboard (fn + ⌘)", action: #selector(openClipboardPopup), keyEquivalent: "v")
+        let clipItem = NSMenuItem(title: "Clipboard (fn + ⌘)", action: #selector(openClipboardPopup), keyEquivalent: "v")
         clipItem.target = self
         menu.addItem(clipItem)
 
@@ -119,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "Quit MyMouse", action: #selector(quitAppCompletely), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit My Mouse", action: #selector(quitAppCompletely), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

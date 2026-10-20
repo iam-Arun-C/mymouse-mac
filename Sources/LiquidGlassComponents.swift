@@ -28,14 +28,14 @@ enum AppTheme {
     static let textSecondary = Color.white.opacity(0.58)
     static let textMuted = Color.white.opacity(0.38)
 
-    // 2. Standard Spring Physics (Consistent across every slider, tab, and button)
-    static let springSlider = Animation.spring(response: 0.34, dampingFraction: 0.76, blendDuration: 0.12)
-    static let springSnappy = Animation.spring(response: 0.26, dampingFraction: 0.80, blendDuration: 0.08)
-    static let springNotchExpand = Animation.spring(response: 0.44, dampingFraction: 0.78, blendDuration: 0.14)
-    static let springNotchCollapse = Animation.spring(response: 0.36, dampingFraction: 0.85, blendDuration: 0.12)
+    // 2. Standard Spring Physics (Critically damped for 120Hz ProMotion with zero stutter/overshoot)
+    static let springSlider = Animation.spring(response: 0.28, dampingFraction: 0.82, blendDuration: 0.08)
+    static let springSnappy = Animation.spring(response: 0.22, dampingFraction: 0.85, blendDuration: 0.06)
+    static let springNotchExpand = Animation.spring(response: 0.36, dampingFraction: 0.82, blendDuration: 0.10)
+    static let springNotchCollapse = Animation.spring(response: 0.28, dampingFraction: 0.88, blendDuration: 0.08)
 }
 
-// MARK: - Reusable Liquid Glass Sliding Pill Indicator (For Segmented Tabs)
+// MARK: - Reusable Liquid Glass Sliding Pill Indicator (Zero Offscreen Shadow Blur for 120Hz)
 struct LiquidGlassSlidingPill: View {
     var accentTint: Color = AppTheme.accent
     var isDarkNotchStyle: Bool = false
@@ -72,7 +72,6 @@ struct LiquidGlassSlidingPill: View {
                     lineWidth: 1.0
                 )
         }
-        .shadow(color: Color.black.opacity(0.28), radius: 6, x: 0, y: 2)
     }
 }
 

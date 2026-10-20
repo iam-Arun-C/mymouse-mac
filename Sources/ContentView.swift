@@ -190,7 +190,7 @@ struct ContentView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("MyMouse")
+                        Text("My Mouse")
                             .font(.system(size: 14.5, weight: .semibold))
                             .foregroundColor(AppTheme.textPrimary)
 
