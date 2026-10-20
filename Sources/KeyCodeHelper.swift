@@ -62,76 +62,92 @@ enum KeyCodeHelper {
         }
     }
 
-    /// Synthesizes a hardware-accurate keyboard shortcut with modifier key-down/up framing and micro-delay.
-    /// This guarantees 100% reliability in Finder, Chrome, Safari, Photoshop, Electron apps, and native Cocoa views.
+    /// Synthesizes a hardware-accurate keyboard shortcut with modifier key-down/up framing and suppression bypass.
+    /// Permits events during the post-mouse-click suppression interval so clicking a UI button to paste never drops ⌘V.
     static func sendKeyCombo(keyCode: CGKeyCode, flags: CGEventFlags) {
         keyQueue.async {
-            // Brief 12ms pause so the swallowed mouse-down event clears the target app's runloop first
-            usleep(12_000)
+            // Brief pause so any triggering mouse-up/down event clears the target app's runloop first
+            usleep(15_000)
 
-            let source = CGEventSource(stateID: .privateState)
+            let source = CGEventSource(stateID: .combinedSessionState)
+            // CRITICAL: Permit synthetic keyboard events even immediately after a physical mouse click!
+            source?.setLocalEventsFilterDuringSuppressionState(
+                [.permitLocalMouseEvents, .permitSystemDefinedEvents],
+                state: .eventSuppressionStateSuppressionInterval
+            )
+            source?.setLocalEventsFilterDuringSuppressionState(
+                [.permitLocalMouseEvents, .permitSystemDefinedEvents],
+                state: .eventSuppressionStateRemoteMouseDrag
+            )
+
+            // Strip any accidental fn / numeric-pad flags so ⌘V is received as a pure Command+V
+            let cleanFlags = flags.intersection([.maskCommand, .maskShift, .maskAlternate, .maskControl])
 
             // 1. Press required modifier keys explicitly
-            if flags.contains(.maskCommand) {
+            if cleanFlags.contains(.maskCommand) {
                 if let modDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Command), keyDown: true) {
-                    modDown.flags = flags
+                    modDown.flags = cleanFlags
                     modDown.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskShift) {
+            if cleanFlags.contains(.maskShift) {
                 if let modDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: true) {
-                    modDown.flags = flags
+                    modDown.flags = cleanFlags
                     modDown.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskAlternate) {
+            if cleanFlags.contains(.maskAlternate) {
                 if let modDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Option), keyDown: true) {
-                    modDown.flags = flags
+                    modDown.flags = cleanFlags
                     modDown.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskControl) {
+            if cleanFlags.contains(.maskControl) {
                 if let modDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Control), keyDown: true) {
-                    modDown.flags = flags
+                    modDown.flags = cleanFlags
                     modDown.post(tap: .cghidEventTap)
                 }
             }
+
+            usleep(4_000)
 
             // 2. Press target key down
             if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true) {
-                keyDown.flags = flags
+                keyDown.flags = cleanFlags
                 keyDown.post(tap: .cghidEventTap)
             }
 
-            // Hold key for 10ms so all apps register the stroke cleanly
-            usleep(10_000)
+            // Hold key for 12ms so all apps (Chrome, Electron, VS Code, Notes, Adobe) register the stroke cleanly
+            usleep(12_000)
 
             // 3. Release target key up
             if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
-                keyUp.flags = flags
+                keyUp.flags = cleanFlags
                 keyUp.post(tap: .cghidEventTap)
             }
 
+            usleep(4_000)
+
             // 4. Release modifier keys cleanly
-            if flags.contains(.maskControl) {
+            if cleanFlags.contains(.maskControl) {
                 if let modUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Control), keyDown: false) {
                     modUp.flags = []
                     modUp.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskAlternate) {
+            if cleanFlags.contains(.maskAlternate) {
                 if let modUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Option), keyDown: false) {
                     modUp.flags = []
                     modUp.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskShift) {
+            if cleanFlags.contains(.maskShift) {
                 if let modUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Shift), keyDown: false) {
                     modUp.flags = []
                     modUp.post(tap: .cghidEventTap)
                 }
             }
-            if flags.contains(.maskCommand) {
+            if cleanFlags.contains(.maskCommand) {
                 if let modUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Command), keyDown: false) {
                     modUp.flags = []
                     modUp.post(tap: .cghidEventTap)

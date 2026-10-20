@@ -214,6 +214,7 @@ final class ClipboardManager: ObservableObject {
     private var popupPanel: DynamicIslandPanel?
     private var hostingView: NotchPassthroughHostingView<DynamicIslandClipboardView>?
     private var previousApp: NSRunningApplication?
+    private var workspaceAppObserver: Any?
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var outsideClickMonitor: Any?
@@ -251,6 +252,24 @@ final class ClipboardManager: ObservableObject {
 
         // Restore all Pinned items from disk immediately on launch / reboot!
         loadPinnedItemsFromDisk()
+
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier {
+            previousApp = front
+        }
+
+        workspaceAppObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier != Bundle.main.bundleIdentifier else {
+                return
+            }
+            self.previousApp = app
+        }
 
         setupGlobalHotkeyMonitors()
         screenChangeObserver = NotificationCenter.default.addObserver(
@@ -634,7 +653,7 @@ final class ClipboardManager: ObservableObject {
         savePinnedItemsToDisk()
     }
 
-    // MARK: - Paste Selected Item into Active App
+    // MARK: - Paste Selected Item Directly into Active Placeholder / Cursor
     func pasteItem(_ entry: ClipboardEntry) {
         isInternalPaste = true
         let pb = NSPasteboard.general
@@ -651,16 +670,48 @@ final class ClipboardManager: ObservableObject {
         }
         lastChangeCount = pb.changeCount
 
-        let targetApp = previousApp
-        closePopup()
-
-        if let app = targetApp, app.bundleIdentifier != Bundle.main.bundleIdentifier {
-            app.activate(options: .activateIgnoringOtherApps)
+        // Determine the external app where the user's cursor / placeholder is waiting
+        let currentFront = NSWorkspace.shared.frontmostApplication
+        let targetApp: NSRunningApplication?
+        if let front = currentFront, front.bundleIdentifier != Bundle.main.bundleIdentifier {
+            targetApp = front
+        } else {
+            targetApp = previousApp
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            KeyCodeHelper.sendKeyCombo(keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand)
+        toastDismissWorkItem?.cancel()
+        hideOrderOutWorkItem?.cancel()
+        removeOutsideClickMonitor()
+        showClearAllConfirmation = false
+        popupPanel?.ignoresMouseEvents = true
+        popupPanel?.resignKey()
+
+        // Snappy notch collapse so the panel is 100% ordered out before ⌘V is sent
+        withAnimation(.spring(response: 0.20, dampingFraction: 0.88, blendDuration: 0.08)) {
+            islandMode = .hidden
         }
+
+        let orderOutAndPasteWork = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            if self.islandMode == .hidden {
+                self.popupPanel?.orderOut(nil)
+            }
+
+            if !AXIsProcessTrusted() {
+                MouseEngine.shared.requestAccessibilityPermission()
+                return
+            }
+
+            if let app = targetApp, app.bundleIdentifier != Bundle.main.bundleIdentifier {
+                app.activate(options: [.activateIgnoringOtherApps])
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
+                KeyCodeHelper.sendKeyCombo(keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand)
+            }
+        }
+        hideOrderOutWorkItem = orderOutAndPasteWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: orderOutAndPasteWork)
     }
 
     // MARK: - Hardware MacBook Notch Geometry Detection & Window Management
@@ -705,6 +756,7 @@ final class ClipboardManager: ObservableObject {
             defer: false
         )
         panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = true
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -765,6 +817,7 @@ final class ClipboardManager: ObservableObject {
 
         ensurePanelCreated()
         positionPanelAtTopCenter()
+        popupPanel?.ignoresMouseEvents = false
         latestToastEntry = entry
 
         let wasHidden = (popupPanel?.isVisible != true) || (islandMode == .hidden)
@@ -820,14 +873,15 @@ final class ClipboardManager: ObservableObject {
 
         ensurePanelCreated()
         positionPanelAtTopCenter()
+        popupPanel?.ignoresMouseEvents = false
 
         let wasVisible = (popupPanel?.isVisible == true) && (islandMode != .hidden)
         if !wasVisible {
             islandMode = .hidden
-            popupPanel?.makeKeyAndOrderFront(nil)
+            popupPanel?.orderFrontRegardless()
             hostingView?.layoutSubtreeIfNeeded()
         } else {
-            popupPanel?.makeKeyAndOrderFront(nil)
+            popupPanel?.orderFrontRegardless()
         }
 
         DispatchQueue.main.async { [weak self] in
@@ -845,6 +899,8 @@ final class ClipboardManager: ObservableObject {
         hideOrderOutWorkItem?.cancel()
         removeOutsideClickMonitor()
         showClearAllConfirmation = false
+        popupPanel?.ignoresMouseEvents = true
+        popupPanel?.resignKey()
 
         withAnimation(AppTheme.springNotchCollapse) {
             islandMode = .hidden
@@ -892,9 +948,11 @@ final class ClipboardManager: ObservableObject {
     }
 }
 
-// MARK: - Top-Bezel Unconstrained Panel & Passthrough Hosting View
+// MARK: - Top-Bezel Unconstrained Non-Activating Panel & Passthrough Hosting View
 private final class DynamicIslandPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
+    // CRITICAL: Must return false so opening or clicking inside the Notch Clipboard
+    // NEVER steals key focus away from the user's active text field / cursor placeholder!
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     // CRITICAL: Prevent AppKit from clamping the window below the macOS menu bar / physical notch!
@@ -921,6 +979,11 @@ private final class NotchPassthroughHostingView<Content: View>: NSHostingView<Co
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+    }
+
+    // CRITICAL: Accept first-mouse clicks immediately without requiring the panel to become key!
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
