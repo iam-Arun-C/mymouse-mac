@@ -1,0 +1,5 @@
+# macOS & Build Artifacts
+.DS_Store
+build/
+*.swp
+*~
