@@ -20,10 +20,6 @@ struct ContentView: View {
         engine.highlightedButtonForConfig ?? .sideForward
     }
 
-    private var pinnedCount: Int {
-        clipboard.items.filter { $0.isPinned }.count
-    }
-
     var body: some View {
         ZStack(alignment: .bottom) {
             // 1. Uniform Obsidian Graphite Background (Standard Apple Pro Color Science)
@@ -328,56 +324,73 @@ struct ContentView: View {
 
                 Divider().opacity(0.25)
 
-                // 4. Notch Clipboard (`fn + ⌘`) Status & Quick Open
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "doc.on.clipboard")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(clipboard.isEnabled ? AppTheme.accent : AppTheme.textMuted)
+                // 4. Compact Single-Row Clipboard Control (Clipboard • fn+⌘ • Open • Switch)
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(clipboard.isEnabled ? AppTheme.accent : AppTheme.textMuted)
 
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Notch Clipboard")
-                                .font(.system(size: 11.5, weight: .semibold))
+                    Text("Clipboard")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(AppTheme.textPrimary)
+                        .lineLimit(1)
+                        .fixedSize()
+
+                    Text("fn+⌘")
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundColor(clipboard.isEnabled ? AppTheme.textSecondary : AppTheme.textMuted)
+                        .padding(.horizontal, 5.5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(Color.white.opacity(0.055))
+                        )
+                        .fixedSize()
+
+                    Spacer(minLength: 4)
+
+                    if clipboard.isEnabled {
+                        Button(action: { clipboard.togglePopup() }) {
+                            Text("Open")
+                                .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(AppTheme.textPrimary)
-                            Text(clipboard.isEnabled ? "Hotkey: fn + ⌘  •  \(pinnedCount) Pinned" : "Disabled")
-                                .font(.system(size: 10))
-                                .foregroundColor(AppTheme.textSecondary)
-                        }
-
-                        Spacer()
-
-                        if clipboard.isEnabled {
-                            Button(action: { clipboard.togglePopup() }) {
-                                Text("Open")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundColor(AppTheme.textPrimary)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4)
-                                    .background(Capsule().fill(Color.white.opacity(0.08)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        Button(action: {
-                            withAnimation(AppTheme.springSnappy) {
-                                clipboard.isEnabled.toggle()
-                            }
-                        }) {
-                            Text(clipboard.isEnabled ? "ON" : "OFF")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(clipboard.isEnabled ? .white : AppTheme.textMuted)
                                 .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
+                                .padding(.vertical, 3.5)
                                 .background(
                                     Capsule()
-                                        .fill(clipboard.isEnabled ? AppTheme.accent : Color.white.opacity(0.06))
+                                        .fill(Color.white.opacity(0.075))
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                                        )
                                 )
                         }
                         .buttonStyle(.plain)
+                        .fixedSize()
                     }
+
+                    // Compact Minimalist Sliding Toggle Switch
+                    Button(action: {
+                        withAnimation(AppTheme.springSlider) {
+                            clipboard.isEnabled.toggle()
+                        }
+                    }) {
+                        ZStack(alignment: clipboard.isEnabled ? .trailing : .leading) {
+                            Capsule()
+                                .fill(clipboard.isEnabled ? AppTheme.accent : Color.white.opacity(0.12))
+                                .frame(width: 28, height: 16)
+
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 12, height: 12)
+                                .padding(.horizontal, 2)
+                                .shadow(color: Color.black.opacity(0.25), radius: 1, x: 0, y: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 14)
-                .padding(.bottom, 14)
+                .padding(.bottom, 13)
             }
         }
     }
