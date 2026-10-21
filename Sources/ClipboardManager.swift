@@ -495,15 +495,22 @@ final class ClipboardManager: ObservableObject {
 
         lastChangeCount = NSPasteboard.general.changeCount
 
-        // Coalesced low-power timer (0.85s interval + 0.35s tolerance allows macOS CPU sleep coalescing)
-        let timer = Timer(timeInterval: 0.85, repeats: true) { [weak self] _ in
+        // Coalesced low-power timer (0.45s interval + 0.15s tolerance for instant toast feedback with minimal CPU)
+        let timer = Timer(timeInterval: 0.45, repeats: true) { [weak self] _ in
             self?.checkPasteboard()
         }
-        timer.tolerance = 0.35
+        timer.tolerance = 0.15
         RunLoop.main.add(timer, forMode: .common)
         self.pollTimer = timer
 
         setupScreenshotFolderWatcher()
+    }
+
+    /// Triggered immediately after a synthesized Copy/Cut action so the toast appears without polling delay
+    func checkPasteboardSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            self?.checkPasteboard()
+        }
     }
 
     func stopMonitoring() {
@@ -813,7 +820,8 @@ final class ClipboardManager: ObservableObject {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.becomesKeyOnlyIfNeeded = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.ignoresMouseEvents = true
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -861,7 +869,8 @@ final class ClipboardManager: ObservableObject {
         }
     }
 
-    /// Briefly morphs the MacBook camera notch into a sleek deep-black compact Island when user copies something new
+    /// Briefly morphs the MacBook camera notch into a sleek deep-black compact Island when user copies something new.
+    /// Strictly 100% click-through (`ignoresMouseEvents = true`) so fast copy-paste, clicking, and typing are NEVER blocked!
     private func showCompactDynamicIslandToast(for entry: ClipboardEntry) {
         guard isEnabled else { return }
         if islandMode == .expandedDrawer && popupPanel?.isVisible == true {
@@ -878,7 +887,8 @@ final class ClipboardManager: ObservableObject {
 
         ensurePanelCreated()
         positionPanelAtTopCenter()
-        popupPanel?.ignoresMouseEvents = false
+        // CRITICAL: Keep compact toast 100% pass-through at OS WindowServer level so clicks & fast paste work instantly!
+        popupPanel?.ignoresMouseEvents = true
         latestToastEntry = entry
 
         if popupPanel?.isVisible != true {
@@ -900,10 +910,10 @@ final class ClipboardManager: ObservableObject {
                 }
             }
             self.hideOrderOutWorkItem = orderOutWork
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30, execute: orderOutWork)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: orderOutWork)
         }
         toastDismissWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15, execute: work)
     }
 
     func togglePopup() {
@@ -1026,11 +1036,13 @@ private final class NotchPassthroughHostingView<Content: View>: NSHostingView<Co
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        return true
+        return manager?.islandMode == .expandedDrawer
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let manager = manager, manager.islandMode != .hidden else {
+        // Only allow hit-testing when the full Clipboard drawer is explicitly open!
+        // During .compactToast or .hidden, return nil so the window never intercepts a single click.
+        guard let manager = manager, manager.islandMode == .expandedDrawer else {
             return nil
         }
         let activeSize = manager.activeMorphSize(for: manager.islandMode)
@@ -1097,19 +1109,20 @@ struct DynamicIslandClipboardView: View {
             morphShape
                 .fill(Color.black)
 
-            // 2. Pre-warmed content layers (no Frame-1 view-tree creation stutter!)
+            // 2. Active mode content — Do NOT mount ScrollView/tracking areas during .compactToast!
             ZStack(alignment: .top) {
-                compactToastContent(notchHeight: notchHeight)
-                    .padding(.horizontal, 14)
-                    .frame(width: 424, height: notchHeight + 50, alignment: .top)
-                    .opacity(manager.islandMode == .compactToast ? 1.0 : 0.0)
-                    .allowsHitTesting(manager.islandMode == .compactToast)
-
-                expandedNotchDrawerContent(notchHeight: notchHeight)
-                    .padding(.horizontal, 18)
-                    .frame(width: 504, height: 448, alignment: .top)
-                    .opacity(manager.islandMode == .expandedDrawer ? 1.0 : 0.0)
-                    .allowsHitTesting(manager.islandMode == .expandedDrawer)
+                if manager.islandMode == .compactToast {
+                    compactToastContent(notchHeight: notchHeight)
+                        .padding(.horizontal, 14)
+                        .frame(width: 424, height: notchHeight + 50, alignment: .top)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                } else if manager.islandMode == .expandedDrawer {
+                    expandedNotchDrawerContent(notchHeight: notchHeight)
+                        .padding(.horizontal, 18)
+                        .frame(width: 504, height: 448, alignment: .top)
+                        .transition(.opacity)
+                }
             }
             .frame(
                 width: ClipboardManager.panelCanvasWidth,
@@ -1126,86 +1139,81 @@ struct DynamicIslandClipboardView: View {
         .preferredColorScheme(.dark)
     }
 
-    // MARK: - 1. Compact Notch Morph Toast (On Copy / Screenshot)
+    // MARK: - 1. Compact Notch Morph Toast (On Copy / Screenshot — Pure 100% Pass-Through Visual HUD)
     private func compactToastContent(notchHeight: CGFloat) -> some View {
-        Button(action: {
-            manager.showPopup()
-        }) {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(AppTheme.accent)
-                            .frame(width: 6, height: 6)
-                        Text(manager.latestToastEntry?.isImage == true ? "Screenshot" : "Clipboard")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(AppTheme.textPrimary)
-                    }
-                    .padding(.leading, 12)
-
-                    Spacer(minLength: 0)
-
-                    Color.clear
-                        .frame(width: manager.notchSize.width, height: notchHeight)
-
-                    Spacer(minLength: 0)
-
-                    Text("fn+⌘")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(AppTheme.textSecondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(Capsule().fill(Color.white.opacity(0.08)))
-                        .padding(.trailing, 12)
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(AppTheme.accent)
+                        .frame(width: 6, height: 6)
+                    Text(manager.latestToastEntry?.isImage == true ? "Screenshot" : "Clipboard")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(AppTheme.textPrimary)
                 }
-                .frame(height: notchHeight)
+                .padding(.leading, 12)
 
-                HStack(spacing: 11) {
-                    ZStack {
-                        Circle()
-                            .fill(AppTheme.accent.opacity(0.18))
-                            .frame(width: 26, height: 26)
-                        Image(systemName: manager.latestToastEntry?.isImage == true ? "photo" : "checkmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(AppTheme.accent)
-                    }
+                Spacer(minLength: 0)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(manager.latestToastEntry?.isImage == true ? "Image Saved" : "Copied")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundColor(AppTheme.textPrimary)
+                Color.clear
+                    .frame(width: manager.notchSize.width, height: notchHeight)
 
-                        if let entry = manager.latestToastEntry {
-                            Text(entry.textPreview)
-                                .font(.system(size: 10.5, weight: .regular))
-                                .foregroundColor(AppTheme.textSecondary)
-                                .lineLimit(1)
-                        }
-                    }
+                Spacer(minLength: 0)
 
-                    Spacer(minLength: 6)
-
-                    if let thumb = manager.latestToastEntry?.previewImage {
-                        Image(nsImage: thumb)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 34, height: 28)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    } else {
-                        Text("Open")
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundColor(AppTheme.textPrimary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white.opacity(0.10)))
-                    }
-                }
-                .padding(.horizontal, 16)
-                .frame(height: 48)
+                Text("fn+⌘")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(AppTheme.textSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                    .padding(.trailing, 12)
             }
-            .contentShape(Rectangle())
+            .frame(height: notchHeight)
+
+            HStack(spacing: 11) {
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.accent.opacity(0.18))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: manager.latestToastEntry?.isImage == true ? "photo" : "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(AppTheme.accent)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(manager.latestToastEntry?.isImage == true ? "Image Saved" : "Copied")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(AppTheme.textPrimary)
+
+                    if let entry = manager.latestToastEntry {
+                        Text(entry.textPreview)
+                            .font(.system(size: 10.5, weight: .regular))
+                            .foregroundColor(AppTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 6)
+
+                if let thumb = manager.latestToastEntry?.previewImage {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 34, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                } else {
+                    Text("Ready")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(AppTheme.accent.opacity(0.14)))
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 48)
         }
-        .buttonStyle(.plain)
+        .allowsHitTesting(false)
     }
 
     // MARK: - 2. Expanded Deep-Black Notch Clipboard Drawer (fn + Command)

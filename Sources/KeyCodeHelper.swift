@@ -15,10 +15,12 @@ enum KeyCodeHelper {
 
         case .copy:
             sendKeyCombo(keyCode: UInt16(kVK_ANSI_C), flags: .maskCommand)
+            ClipboardManager.shared.checkPasteboardSoon()
         case .paste:
             sendKeyCombo(keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand)
         case .cut:
             sendKeyCombo(keyCode: UInt16(kVK_ANSI_X), flags: .maskCommand)
+            ClipboardManager.shared.checkPasteboardSoon()
         case .undo:
             sendKeyCombo(keyCode: UInt16(kVK_ANSI_Z), flags: .maskCommand)
         case .redo:
@@ -67,7 +69,7 @@ enum KeyCodeHelper {
     static func sendKeyCombo(keyCode: CGKeyCode, flags: CGEventFlags) {
         keyQueue.async {
             // Brief pause so any triggering mouse-up/down event clears the target app's runloop first
-            usleep(15_000)
+            usleep(8_000)
 
             let source = CGEventSource(stateID: .combinedSessionState)
             // CRITICAL: Permit synthetic keyboard events even immediately after a physical mouse click!
@@ -109,7 +111,7 @@ enum KeyCodeHelper {
                 }
             }
 
-            usleep(4_000)
+            usleep(3_000)
 
             // 2. Press target key down
             if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true) {
@@ -117,8 +119,8 @@ enum KeyCodeHelper {
                 keyDown.post(tap: .cghidEventTap)
             }
 
-            // Hold key for 12ms so all apps (Chrome, Electron, VS Code, Notes, Adobe) register the stroke cleanly
-            usleep(12_000)
+            // Hold key for 8ms so all apps (Chrome, Electron, VS Code, Notes, Adobe) register the stroke cleanly
+            usleep(8_000)
 
             // 3. Release target key up
             if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
@@ -126,7 +128,7 @@ enum KeyCodeHelper {
                 keyUp.post(tap: .cghidEventTap)
             }
 
-            usleep(4_000)
+            usleep(3_000)
 
             // 4. Release modifier keys cleanly
             if cleanFlags.contains(.maskControl) {
@@ -153,6 +155,9 @@ enum KeyCodeHelper {
                     modUp.post(tap: .cghidEventTap)
                 }
             }
+
+            // Clean separation gap before any subsequent rapid key combo (e.g. instant Copy -> Paste)
+            usleep(6_000)
         }
     }
 

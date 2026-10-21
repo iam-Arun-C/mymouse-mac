@@ -76,7 +76,7 @@ final class MouseEngine: ObservableObject {
     private var tapCountsByButton: [Int: Int] = [:]
     private var lastTapTimestampByButton: [Int: TimeInterval] = [:]
     private var pendingTapWorkItems: [Int: DispatchWorkItem] = [:]
-    private let multiTapThreshold: TimeInterval = 0.26
+    private let multiTapThreshold: TimeInterval = 0.22
 
     private let profilesKey = "MyMouse.ClickFlow.Profiles.v4"
     private let legacyProfilesKey = "MyMouse.ClickFlow.Profiles.v3"
@@ -507,10 +507,12 @@ final class MouseEngine: ObservableObject {
             }
         }
 
-        // Only swallow for Studio testing if the Studio window is visible AND the cursor is physically inside the Studio window!
+        // Only swallow for Studio testing if MyMouse itself is the active frontmost app AND the Studio key window is under the cursor!
         if isStudioWindowVisible,
+           NSApp.isActive,
            let studioWin = studioWindowRef,
            studioWin.isVisible,
+           studioWin.isKeyWindow,
            NSPointInRect(NSEvent.mouseLocation, studioWin.frame) {
             return rawButtonNumber >= 3 ? nil : Unmanaged.passUnretained(event)
         }
@@ -532,6 +534,16 @@ final class MouseEngine: ObservableObject {
 
         guard type == .otherMouseDown else {
             return Unmanaged.passUnretained(event)
+        }
+
+        // If another button had a pending multi-tap action (e.g. Forward = Copy),
+        // flush and execute it immediately before this new button (e.g. Backward = Paste) runs!
+        for (otherBtn, pendingWork) in pendingTapWorkItems where otherBtn != rawButtonNumber {
+            pendingTapWorkItems.removeValue(forKey: otherBtn)
+            if !pendingWork.isCancelled {
+                pendingWork.perform()
+                pendingWork.cancel()
+            }
         }
 
         // Determine active external application (even if MyMouse was just closed!)
